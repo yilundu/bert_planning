@@ -13,11 +13,13 @@ python test.py
 ```
 
 The overall idea is that BERT defines an energy function over discrete
-trajectories $\prod_i p(s_i|s_{\i}$ -- we can run MCMC sampling over this energy function to generate
+trajectories $E(s_0, s_1, \ldots, s_T) = \prod_i p(s_i|s_{\\i}$ -- we can run MCMC sampling over this energy function to generate
 a trajectory.
 
-We can then bias the MCMC sampling protocal with different cost functions specifying
-different aspects of a task, such as the goal state or a condition we aspire to have.
+We can then bias the MCMC sampling protocal on this energy function to generate different trajectories (BERT has a mouth and it can speak)
+We want to see if we can modulate this trajectory energy function with different goal energy function -- such as for example that the goal has
+to be a particular state, and see if MCMC sampling can successfully generate a correct state.
+
 
 
 ## Requirement
