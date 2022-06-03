@@ -4,9 +4,11 @@ import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.multiprocessing as mp
+from torch.utils.data import DataLoader
+import numpy as np
 
 from bert import BERTLM
-from data import Vocab, DataLoader, CLS, SEP, MASK
+from data import Vocab, CLS, SEP, MASK, GraphDataset, GraphVocab
 from adam import AdamWeightDecayOptimizer
 
 import argparse, os
@@ -36,6 +38,8 @@ def parse_config():
     parser.add_argument('--fp16', action='store_true')
     parser.add_argument('--world_size', type=int)
     parser.add_argument('--gpus', type=int)
+    parser.add_argument('--graph_size', type=int, default=10)
+    parser.add_argument('--plan_length', type=int, default=10)
     parser.add_argument('--MASTER_ADDR', type=str)
     parser.add_argument('--MASTER_PORT', type=str)
     parser.add_argument('--start_rank', type=int)
@@ -46,6 +50,9 @@ def parse_config():
 def update_lr(optimizer, lr):
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
+
+def worker_init_fn(worker_id):
+    np.random.seed(int(torch.utils.data.get_worker_info().seed)%(2**32-1))
  
 def average_gradients(model):
     """ Gradient averaging. """
@@ -57,10 +64,12 @@ def average_gradients(model):
 
 def run(args, local_rank):
     """ Distributed Synchronous """
-    torch.manual_seed(1234)
-    vocab = Vocab(args.vocab, min_occur_cnt=args.min_occur_cnt, specials=[CLS, SEP, MASK])
+    # torch.manual_seed(1234)
+    vocab = GraphVocab(args.graph_size, specials=[MASK])
+
     if (args.world_size==1 or dist.get_rank() ==0):
         print (vocab.size)
+
     model = BERTLM(local_rank, vocab, args.embed_dim, args.ff_embed_dim, args.num_heads, args.dropout, args.layers, args.approx)
     if args.start_from is not None:
         ckpt = torch.load(args.start_from, map_location='cpu')
@@ -101,28 +110,29 @@ def run(args, local_rank):
     if args.start_from is not None:
         optimizer.load_state_dict(ckpt['optimizer'])
 
-    train_data = DataLoader(vocab, args.train_data, args.batch_size, args.max_len)
+    # train_data = DataLoader(vocab, args.train_data, args.batch_size, args.max_len)
+    graph_dataset = GraphDataset(vocab, args.plan_length, args.graph_size)
+    train_data = DataLoader(graph_dataset, num_workers=4, batch_size=args.batch_size, shuffle=True, drop_last=True, worker_init_fn=worker_init_fn)
     batch_acm = 0
     acc_acm, ntokens_acm, acc_nxt_acm, npairs_acm, loss_acm = 0., 0., 0., 0., 0.
     while True:
         model.train()
-        for truth, inp, seg, msk, nxt_snt_flag in train_data:
+        for truth, inp, msk in train_data:
             batch_acm += 1
             if batch_acm <= args.warmup_steps:
                 update_lr(optimizer, args.lr*batch_acm/args.warmup_steps)
-            truth = truth.cuda(local_rank)
-            inp = inp.cuda(local_rank)
-            seg = seg.cuda(local_rank)
-            msk = msk.cuda(local_rank)
-            nxt_snt_flag = nxt_snt_flag.cuda(local_rank)
+
+            truth = truth.cuda(local_rank).permute(1, 0).contiguous()
+            inp = inp.cuda(local_rank).permute(1, 0).contiguous()
+            msk = msk.cuda(local_rank).permute(1, 0).contiguous()
 
             optimizer.zero_grad()
-            res, loss, acc, ntokens, acc_nxt, npairs = model(truth, inp, seg, msk, nxt_snt_flag)
+            res, loss, acc, ntokens, npairs = model(truth, inp, msk)
             loss_acm += loss.item()
             acc_acm += acc
             ntokens_acm += ntokens
-            acc_nxt_acm += acc_nxt
             npairs_acm += npairs
+
             if args.fp16:
                 optimizer.backward(loss)
             else:
@@ -137,7 +147,7 @@ def run(args, local_rank):
             if (args.world_size==1 or dist.get_rank() ==0) and batch_acm%args.save_every == -1%args.save_every:
                 if not os.path.exists(args.save_dir):
                     os.mkdir(args.save_dir)
-                torch.save({'args':args, 'model':model.state_dict(), 'optimizer':optimizer.state_dict()}, '%s/epoch%d_batch_%d'%(args.save_dir, train_data.epoch_id, batch_acm))
+                torch.save({'args':args, 'model':model.state_dict(), 'optimizer':optimizer.state_dict()}, '%s/epoch_batch_%d'%(args.save_dir, batch_acm))
 
 def init_processes(args, local_rank, fn, backend='nccl'):
     """ Initialize the distributed environment. """

@@ -44,7 +44,7 @@ class BERTLM(nn.Module):
         nn.init.normal_(self.one_more.weight, std=0.02)
         nn.init.normal_(self.one_more_nxt_snt.weight, std=0.02)
     
-    def work(self, inp, seg=None, layers=None):
+    def work(self, inp, layers=None):
         # inp (torch.Tensor): token ids, size: (seq_len x bsz)
         # seg (torch.Tensor): segment ids, size: (seq_len x bsz), default is None, which means all zeros.
         # layers (list or None): list of layer ids or None: the list of the layers you want to return, default is None, which means only the last layer will be returned.
@@ -57,34 +57,30 @@ class BERTLM(nn.Module):
                     raise ValueError('layer %d out of range '%x)
             layers = [ (x+tot_layers if x <0 else x) for x in layers]
             max_layer_id = max(layers)
-        
+
         seq_len, bsz = inp.size()
-        if seg is None:
-            seg = torch.zeros_like(inp)
-        x = self.tok_embed(inp) + self.seg_embed(seg) + self.pos_embed(inp)
+        x = self.tok_embed(inp) + self.pos_embed(inp)
         x = self.emb_layer_norm(x)
-        x = F.dropout(x, p=self.dropout, training=self.training)
+        x = F.dropout(x, p=self.dropout, training=False)
         padding_mask = torch.eq(inp, self.vocab.padding_idx)
         if not padding_mask.any():
             padding_mask = None
-        
+
         xs = []
         for layer_id, layer in enumerate(self.layers):
             x, _ ,_ = layer(x, self_padding_mask=padding_mask)
-            xs.append(x)
-            if layers is not None and layer_id >= max_layer_id:
-                break
-        
-        if layers is not None:
-            x = torch.stack([xs[i] for i in layers])
-            z = torch.tanh(self.one_more_nxt_snt(x[:,0,:,:]))
-        else:
-            z = torch.tanh(self.one_more_nxt_snt(x[0]))
-        return x, z
 
-    def forward(self, truth, inp, seg, msk, nxt_snt_flag):
+        y = self.one_more_layer_norm(gelu(self.one_more(x)))
+
+        out_proj_weight = self.tok_embed.weight
+        output_prob = F.linear(y, out_proj_weight, self.out_proj_bias)
+
+        return output_prob
+
+    def forward(self, truth, inp, msk):
         seq_len, bsz = inp.size()
-        x = self.tok_embed(inp) + self.seg_embed(seg) + self.pos_embed(inp)
+        pos_embed = self.pos_embed(inp)
+        x = self.tok_embed(inp) + self.pos_embed(inp)
         x = self.emb_layer_norm(x)
         x = F.dropout(x, p=self.dropout, training=self.training)
         padding_mask = torch.eq(truth, self.vocab.padding_idx)
@@ -96,7 +92,7 @@ class BERTLM(nn.Module):
         masked_x = x.masked_select(msk.unsqueeze(-1))
         masked_x = masked_x.view(-1, self.embed_dim)
         gold = truth.masked_select(msk)
-        
+
         y = self.one_more_layer_norm(gelu(self.one_more(masked_x)))
         out_proj_weight = self.tok_embed.weight
 
@@ -107,15 +103,10 @@ class BERTLM(nn.Module):
 
         loss = F.nll_loss(log_probs, gold, reduction='mean')
 
-        z = torch.tanh(self.one_more_nxt_snt(x[0]))
-        nxt_snt_pred = torch.sigmoid(self.nxt_snt_pred(z).squeeze(1))
-        nxt_snt_acc = torch.eq(torch.gt(nxt_snt_pred, 0.5), nxt_snt_flag).float().sum().item()
-        nxt_snt_loss = F.binary_cross_entropy(nxt_snt_pred, nxt_snt_flag.float(), reduction='mean')
-        
-        tot_loss = loss + nxt_snt_loss
-        
+        tot_loss = loss
+
         _, pred = log_probs.max(-1)
         tot_tokens = msk.float().sum().item()
         acc = torch.eq(pred, gold).float().sum().item()
-        
-        return (pred, gold), tot_loss, acc, tot_tokens, nxt_snt_acc, bsz
+
+        return (pred, gold), tot_loss, acc, tot_tokens, bsz
