@@ -1,22 +1,30 @@
-# BERT
-a simple yet complete implementation of the popular BERT model (**added with some special treatment to Chinese**).
+# Planning with BERT
+This is a simple implementation of planning with BERT model. 
 
-**update!**  I got no idea why this repo suddenly gets some public attention but thanks. I just made an update to make it better.
+To quickly train a bert model use
+```
+./train.sh
+```
 
-Experiments show this code could achieve close, if not better, performance to that of Google.
+To then use the bert model for planning, run the following command
 
-An internal variant of this code produced pre-trained models that are widely used at Tencent.
+```
+python test.py
+```
 
-## Advanced Features
+The overall idea is that BERT defines an energy function over discrete
+trajectories $\prod_i p(s_i|s_{\i}$ -- we can run MCMC sampling over this energy function to generate
+a trajectory.
 
-- Distributed training
-- Lazy file reader
+We can then bias the MCMC sampling protocal with different cost functions specifying
+different aspects of a task, such as the goal state or a condition we aspire to have.
+
 
 ## Requirement
 - python==3.6
 - torch==1.0.0
 
-## Quick Guide
+## Guide
 
 - This code is very simple, it should explain itself.
 - Train a model from scratch
@@ -51,5 +59,3 @@ An internal variant of this code produced pre-trained models that are widely use
     word_level_tokens = word_segmenter.segment(x)
     #Note you may need to add speical tokens (e.g., [CLS], [SEP]) by yourself.
     ```
-## Contact
-[Deng Cai](https://jcyk.github.io)
